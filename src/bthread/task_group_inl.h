@@ -60,6 +60,7 @@ inline void TaskGroup::exchange(TaskGroup** pg, bthread_t next_tid) {
 }
 
 inline void TaskGroup::sched_to(TaskGroup** pg, bthread_t next_tid) {
+    // 通过传入的参数：next_tid找到TM：next_meta，和对应的ContextualStack信息：stk。
     TaskMeta* next_meta = address_meta(next_tid);
     if (next_meta->stack == NULL) {
         ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner);
@@ -74,6 +75,7 @@ inline void TaskGroup::sched_to(TaskGroup** pg, bthread_t next_tid) {
             next_meta->set_stack((*pg)->_main_stack);
         }
     }
+    // 最后调用另外一个重载的sched_to：
     // Update now_ns only when wait_task did yield.
     sched_to(pg, next_meta);
 }

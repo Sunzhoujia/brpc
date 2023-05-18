@@ -121,6 +121,7 @@ bool TaskGroup::wait_task(bthread_t* tid) {
         if (_last_pl_state.stopped()) {
             return false;
         }
+        // 阻塞等待 task 到来？
         _pl->wait(_last_pl_state);
         if (steal_task(tid)) {
             return true;
@@ -149,10 +150,13 @@ void TaskGroup::run_main_task() {
 
     TaskGroup* dummy = this;
     bthread_t tid;
+    // 死循环执行wait_task来等待有效的任务，如果能等到任务，wait_task的出参tid（bthread_t类型）会记录这个任务的ID号。
     while (wait_task(&tid)) {
+        // sched_to 进行栈、寄存器等运行时上下文的切换，为接下来运行的任务恢复其上下文
         TaskGroup::sched_to(&dummy, tid);
         DCHECK_EQ(this, dummy);
         DCHECK_EQ(_cur_meta->stack, _main_stack);
+        // 判断如果当前的tid不是TG的主要tid(main_tid)则执行任务。
         if (_cur_meta->tid != _main_tid) {
             TaskGroup::task_runner(1/*skip remained*/);
         }
@@ -209,6 +213,7 @@ TaskGroup::~TaskGroup() {
     }
 }
 
+// 每个 TG 有一个主 TM，以及 main_stack
 int TaskGroup::init(size_t runqueue_capacity) {
     if (_rq.init(runqueue_capacity) != 0) {
         LOG(FATAL) << "Fail to init _rq";
@@ -265,7 +270,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         --g->_sched_recursive_guard;
 #endif
     }
-
+    // do while循环中会执行回调函数，结束的时候会查找下一个任务，并切换上下文。循环的终止条件是tls_task_group的_cur_meta不等于其_main_tid。
     do {
         // A task can be stopped before it gets running, in which case
         // we may skip user function, but that may confuse user:
@@ -290,6 +295,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         // bthread_exit(). User code is intended to crash when an exception is
         // not caught explicitly. This is consistent with other threading
         // libraries.
+        // 执行TM（bthread)中的回调函数
         void* thread_return;
         try {
             thread_return = m->fn(m->arg);
@@ -311,6 +317,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
                       << m->stat.cputime_ns / 1000000.0 << "ms";
         }
 
+        // 清理 线程局部变量
         // Clean tls variables, must be done before changing version_butex
         // otherwise another thread just joined this thread may not see side
         // effects of destructing tls variables.
@@ -322,6 +329,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
             m->local_storage.keytable = NULL; // optional
         }
 
+        // 累加版本号，且版本号不能为0
         // Increase the version and wake up all joiners, if resulting version
         // is 0, change it to 1 to make bthread_t never be 0. Any access
         // or join to the bthread after changing version will be rejected.
@@ -332,10 +340,13 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
                 ++*m->version_butex;
             }
         }
+        // 唤醒joiner
         butex_wake_except(m->version_butex, 0);
 
         g->_control->_nbthreads << -1;
         g->set_remained(TaskGroup::_release_last_context, m);
+
+        // 查找下一个任务，并切换到其对应的运行时上下文
         ending_sched(&g);
 
     } while (g->_cur_meta->tid != g->_main_tid);
@@ -424,6 +435,7 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     const int64_t start_ns = butil::cpuwide_time_ns();
     const bthread_attr_t using_attr = (attr ? *attr : BTHREAD_ATTR_NORMAL);
     butil::ResourceId<TaskMeta> slot;
+    // 从资源池获取一个 TM 对象，然后初始化，将回调函数和参数保存到 TM 对象中
     TaskMeta* m = butil::get_resource(&slot);
     if (__builtin_expect(!m, 0)) {
         return ENOMEM;
@@ -442,6 +454,7 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     }
     m->cpuwide_start_ns = start_ns;
     m->stat = EMPTY_STAT;
+    // 计算tid，即 bthread 任务的 id 号
     m->tid = make_tid(*m->version_butex, slot);
     *th = m->tid;
     if (using_attr.flags & BTHREAD_LOG_START_AND_FINISH) {
@@ -510,6 +523,8 @@ TaskStatistics TaskGroup::main_stat() const {
     return m ? m->stat : EMPTY_STAT;
 }
 
+// 在ending_sched()中，会有依次从TG的rq、remote_rq取任务，找不到再窃取其他TG的任务，
+// 如果都找不到任务，则设置_cur_meta为_main_tid，也就是让task_runner()的循环终止。
 void TaskGroup::ending_sched(TaskGroup** pg) {
     TaskGroup* g = *pg;
     bthread_t next_tid = 0;
@@ -590,9 +605,11 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
     ++cur_meta->stat.nswitch;
     ++ g->_nswitch;
     // Switch to the task
+    // 判断下一个的TM（next_meta）和当前TM（cur_meta）如果不是同一个，就去切换栈。
     if (__builtin_expect(next_meta != cur_meta, 1)) {
         g->_cur_meta = next_meta;
         // Switch tls_bls
+        // tls_bls表示的是TM（bthread）内的局部存储。先做还原，并且赋值成下一个TM的局部存储
         cur_meta->local_storage = tls_bls;
         tls_bls = next_meta->local_storage;
 
@@ -605,6 +622,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         }
 
         if (cur_meta->stack != NULL) {
+            // 执行jump_stack()去切换栈。
             if (next_meta->stack != cur_meta->stack) {
                 jump_stack(cur_meta->stack, next_meta->stack);
                 // probably went to another group, need to assign g again.
@@ -623,6 +641,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         LOG(FATAL) << "bthread=" << g->current_tid() << " sched_to itself!";
     }
 
+    // 去执行TG的remain回调函数（如果设置过）
     while (g->_last_context_remained) {
         RemainedFn fn = g->_last_context_remained;
         g->_last_context_remained = NULL;

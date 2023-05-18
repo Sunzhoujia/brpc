@@ -55,6 +55,7 @@ template <typename StackClass> struct StackFactory {
                 context = NULL;
                 return;
             }
+            // 创建bthread协程栈，返回值为协程栈顶context，函数入参分别为协程栈底，栈大小，以及这个bthread要执行的函数entry。
             context = bthread_make_fcontext(storage.bottom, storage.stacksize, entry);
             stacktype = (StackType)StackClass::stacktype;
         }

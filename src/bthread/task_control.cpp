@@ -57,12 +57,16 @@ void run_worker_startfn() {
 }
 
 void* TaskControl::worker_thread(void* arg) {
+    // 1. TG创建前的处理，里面也是回调g_worker_start_fun函数来执行操作，
+    // 可以通过 bthread_set_worker_startfn() 来设置这个回调函数，
     run_worker_startfn();    
 #ifdef BAIDU_INTERNAL
     logging::ComlogInitializer comlog_initializer;
 #endif
-    
+
+    // 2. 获取TC的指针
     TaskControl* c = static_cast<TaskControl*>(arg);
+    // 2.1 创建一个TG
     TaskGroup* g = c->create_group();
     TaskStatistics stat;
     if (NULL == g) {
@@ -75,15 +79,22 @@ void* TaskControl::worker_thread(void* arg) {
     butil::PlatformThread::SetName(worker_thread_name.c_str());
     BT_VLOG << "Created worker=" << pthread_self()
             << " bthread=" << g->main_tid();
-
+    
+    // 3.1 把thread local的tls_task_group 用刚才创建的TG来初始化
     tls_task_group = g;
+    // 3.2 worker计数加1（_nworkers是bvar::Adder<int64_t>类型)
     c->_nworkers << 1;
+
+    // 4. TG运行主任务（死循环）
     g->run_main_task();
 
+    // 5. TG结束时返回状态信息
     stat = g->main_stat();
     BT_VLOG << "Destroying worker=" << pthread_self() << " bthread="
             << g->main_tid() << " idle=" << stat.cputime_ns / 1000000.0
             << "ms uptime=" << g->current_uptime_ns() / 1000000.0 << "ms";
+
+    // 6. 各种清理操作
     tls_task_group = NULL;
     g->destroy_self();
     c->_nworkers << -1;
@@ -167,6 +178,7 @@ int TaskControl::init(int concurrency) {
     }
     
     _workers.resize(_concurrency);   
+    // TC 初始化就是调用了 pthread_create 创建了 _concurrency 个线程， 回调函数设置成了 worker_thread
     for (int i = 0; i < _concurrency; ++i) {
         const int rc = pthread_create(&_workers[i], NULL, worker_thread, this);
         if (rc) {
@@ -349,6 +361,9 @@ bool TaskControl::steal_task(bthread_t* tid, size_t* seed, size_t offset) {
     // NOTE: Don't return inside `for' iteration since we need to update |seed|
     bool stolen = false;
     size_t s = *seed;
+    // 随机找一个TG，先从它的rq队列窃取任务，如果失败再从它的remote_rq队列窃取任务。
+    // 它并没有从当前TG的rq找任务！这是为什么呢？原因是避免race condition。
+    // 也就是避免多个TG 等待任务的时候，当前TG从rq取任务，与其他TG过来自己这边窃取任务造成竞态。从而提升一点点的性能。
     for (size_t i = 0; i < ngroup; ++i, s += offset) {
         TaskGroup* g = _groups[s % ngroup];
         // g is possibly NULL because of concurrent _destroy_group

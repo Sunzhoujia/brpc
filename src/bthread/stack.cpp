@@ -72,6 +72,7 @@ int allocate_stack_storage(StackStorage* s, int stacksize_in, int guardsize_in) 
             return -1;
         }
         s_stack_count.fetch_add(1, butil::memory_order_relaxed);
+        // bottom 指向栈底，即高地址
         s->bottom = (char*)mem + stacksize;
         s->stacksize = stacksize;
         s->guardsize = 0;
@@ -89,6 +90,7 @@ int allocate_stack_storage(StackStorage* s, int stacksize_in, int guardsize_in) 
             ~PAGESIZE_M1;
 
         const int memsize = stacksize + guardsize;
+        // 匿名映射一段空间
         void* const mem = mmap(NULL, memsize, (PROT_READ | PROT_WRITE),
                                (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
 

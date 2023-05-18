@@ -212,6 +212,7 @@ friend class TaskControl;
     bool wait_task(bthread_t* tid);
 
     bool steal_task(bthread_t* tid) {
+        // 首先TG的remote_rq队列中的任务出队，如果没有则同全局TC来窃取任务
         if (_remote_rq.pop(tid)) {
             return true;
         }
@@ -241,8 +242,12 @@ friend class TaskControl;
 #endif
     size_t _steal_seed;
     size_t _steal_offset;
+    // TG中有一个主TM，这个TM的stack是main_stack
     ContextualStack* _main_stack;
     bthread_t _main_tid;
+
+    // TG中主要有两个 rq。当创建 bthread 时，如果当前线程创建了TG，会将 bthread 放入 rq 中。
+    // 在没有woker（TG）的线程中把bthread入队，只能入到有worder线程中的TG的remote_rq队列。
     WorkStealingQueue<bthread_t> _rq;
     RemoteTaskQueue _remote_rq;
     int _remote_num_nosignal;

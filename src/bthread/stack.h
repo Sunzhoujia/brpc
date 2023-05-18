@@ -62,7 +62,7 @@ enum StackType {
 };
 
 struct ContextualStack {
-    bthread_fcontext_t context;
+    bthread_fcontext_t context; // context指向协程栈顶
     StackType stacktype;
     StackStorage storage;
 };

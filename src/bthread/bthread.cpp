@@ -85,6 +85,7 @@ inline TaskControl* get_or_new_task_control() {
     if (NULL == c) {
         return NULL;
     }
+    // 用并发度concurrency来初始化全局TC
     int concurrency = FLAGS_bthread_min_concurrency > 0 ?
         FLAGS_bthread_min_concurrency :
         FLAGS_bthread_concurrency;
@@ -93,6 +94,7 @@ inline TaskControl* get_or_new_task_control() {
         delete c;
         return NULL;
     }
+    // 将全局TC存入原子变量中
     p->store(c, butil::memory_order_release);
     return c;
 }
