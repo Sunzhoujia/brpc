@@ -73,6 +73,7 @@ static const size_t OP_GROUP_NBLOCK_NBIT = 16;
 static const size_t OP_GROUP_NBLOCK = (1UL << OP_GROUP_NBLOCK_NBIT);
 static const size_t OP_INITIAL_FREE_LIST_SIZE = 1024;
 
+// 用一个模板类来计算对于类型T，每个Block可以存放的对象个数
 template <typename T>
 class ObjectPoolBlockItemNum {
     static const size_t N1 = ObjectPoolBlockMaxSize<T>::value / sizeof(T);
@@ -85,17 +86,20 @@ public:
 template <typename T>
 class BAIDU_CACHELINE_ALIGNMENT ObjectPool {
 public:
+    // 一个 Block 中存放 N 个T类型的对象
     static const size_t BLOCK_NITEM = ObjectPoolBlockItemNum<T>::value;
     static const size_t FREE_CHUNK_NITEM = BLOCK_NITEM;
 
     // Free objects are batched in a FreeChunk before they're added to
     // global list(_free_chunks).
+    // 两种 FreeChunk，第一种是静态分配的，第二种是动态分配的（一个指针）
     typedef ObjectPoolFreeChunk<T, FREE_CHUNK_NITEM>    FreeChunk;
     typedef ObjectPoolFreeChunk<T, 0> DynamicFreeChunk;
 
     // When a thread needs memory, it allocates a Block. To improve locality,
     // items in the Block are only used by the thread.
     // To support cache-aligned objects, align Block.items by cacheline.
+    // 缓存对齐，每个block只会被一个线程使用
     struct BAIDU_CACHELINE_ALIGNMENT Block {
         char items[sizeof(T) * BLOCK_NITEM];
         size_t nitem;
@@ -106,6 +110,9 @@ public:
     // An Object addresses at most OP_MAX_BLOCK_NGROUP BlockGroups,
     // each BlockGroup addresses at most OP_GROUP_NBLOCK blocks. So an
     // object addresses at most OP_MAX_BLOCK_NGROUP * OP_GROUP_NBLOCK Blocks.
+
+    // 每个ObjectPool最多可以管理 OP_MAX_BLOCK_NGROUP * OP_GROUP_NBLOCK 个Block
+    // 每个BlockGroup最多可以管理 OP_GROUP_NBLOCK 个Block
     struct BlockGroup {
         butil::atomic<size_t> nblock;
         butil::atomic<Block*> blocks[OP_GROUP_NBLOCK];
@@ -119,6 +126,7 @@ public:
     };
 
     // Each thread has an instance of this class.
+    // localPool是tls，每个线程都有一个LocalPool，减少申请内存时的 race condition
     class BAIDU_CACHELINE_ALIGNMENT LocalPool {
     public:
         explicit LocalPool(ObjectPool* pool)
@@ -145,6 +153,12 @@ public:
         // which may include parenthesis because when T is POD, "new T()"
         // and "new T" are different: former one sets all fields to 0 which
         // we don't want.
+        // 通过ObjectPool分配对象的流程：
+        // 1. 从localPool 的 freeChunk中取出一个对象
+        // 2. 从objectPool中取一个新的 freeChunk使用，需要加锁
+        // 3. 从local block中原地new一个对象T。
+        // 4. 从objectPool中取一块新的block使用（先找group，再append该block到group的后面，如果group满了就add group）
+
 #define BAIDU_OBJECT_POOL_GET(CTOR_ARGS)                                \
         /* Fetch local free ptr */                                      \
         if (_cur_free.nfree) {                                          \
@@ -308,6 +322,7 @@ public:
         if (p) {
             return p;
         }
+        // 加锁，保证只会 new 一个 ObjectPool 出来，下面这段逻辑只会被执行一次。
         pthread_mutex_lock(&_singleton_mutex);
         p = _singleton.load(butil::memory_order_consume);
         if (!p) {
@@ -342,12 +357,14 @@ private:
                     _block_groups[ngroup - 1].load(butil::memory_order_consume);
                 const size_t block_index =
                     g->nblock.fetch_add(1, butil::memory_order_relaxed);
+                // 当前group还能放下一个block
                 if (block_index < OP_GROUP_NBLOCK) {
                     g->blocks[block_index].store(
                         new_block, butil::memory_order_release);
                     *index = (ngroup - 1) * OP_GROUP_NBLOCK + block_index;
                     return new_block;
                 }
+                // nblock需要减一，因为没有在当前group存放block成功
                 g->nblock.fetch_sub(1, butil::memory_order_relaxed);
             }
         } while (add_block_group(ngroup));
