@@ -390,6 +390,11 @@ void TaskControl::signal_task(int num_task) {
     // be created to match caller's requests. But in another side, there's also
     // many useless signalings according to current impl. Capping the concurrency
     // is a good balance between performance and timeliness of scheduling.
+    // 总结：控制signal的task数目是为了该函数尽快返回，减少阻塞时间。
+    // 如果TC的signal_task()通知的任务个数多，那么队列被消费的也就越快。
+    // 消费的快本来是好事，但是也有个问题就是我们现在之所以走到signal_task()是因为我们在“生产”bthread任务，
+    // 也就是说在执行bthread_start_background()（或其他函数）创建新任务。这个函数调用是阻塞的，
+    // 如果signal_task()通知的任务个数太多，则会导致bthread_start_background()阻塞的时间拉长。所以这里说是找到一种平衡。
     if (num_task > 2) {
         num_task = 2;
     }

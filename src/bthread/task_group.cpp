@@ -376,6 +376,7 @@ int TaskGroup::start_foreground(TaskGroup** pg,
     }
     const int64_t start_ns = butil::cpuwide_time_ns();
     const bthread_attr_t using_attr = (attr ? *attr : BTHREAD_ATTR_NORMAL);
+    // 先初始化一个 slot，然后通过 get_resource 获取一个 TM 对象，然后初始化 TM 对象
     butil::ResourceId<TaskMeta> slot;
     TaskMeta* m = butil::get_resource(&slot);
     if (__builtin_expect(!m, 0)) {
@@ -403,6 +404,7 @@ int TaskGroup::start_foreground(TaskGroup** pg,
 
     TaskGroup* g = *pg;
     g->_control->_nbthreads << 1;
+    // 在 pthread 里创建 bthread
     if (g->is_current_pthread_task()) {
         // never create foreground task in pthread.
         g->ready_to_run(m->tid, (using_attr.flags & BTHREAD_NOSIGNAL));
@@ -641,7 +643,8 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         LOG(FATAL) << "bthread=" << g->current_tid() << " sched_to itself!";
     }
 
-    // 去执行TG的remain回调函数（如果设置过）
+    // 去执行TG的remain回调函数，当 old bthread 主动 yield 给 new bthread时，会设置这个回调函数。
+    // 该函数会把 old bthread 入队，等待调度。
     while (g->_last_context_remained) {
         RemainedFn fn = g->_last_context_remained;
         g->_last_context_remained = NULL;
@@ -674,6 +677,7 @@ void TaskGroup::ready_to_run(bthread_t tid, bool nosignal) {
     if (nosignal) {
         ++_num_nosignal;
     } else {
+      // 把之前的nosignal任务一起唤醒
         const int additional_signal = _num_nosignal;
         _num_nosignal = 0;
         _nsignaled += 1 + additional_signal;

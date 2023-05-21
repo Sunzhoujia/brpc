@@ -40,6 +40,7 @@ __BEGIN_DECLS
 // `tid'. Switch to the new thread and schedule old thread to run. Use this
 // function when the new thread is more urgent.
 // Returns 0 on success, errno otherwise.
+// 创建新的bthread后马上switch到新的bthread执行
 extern int bthread_start_urgent(bthread_t* __restrict tid,
                                 const bthread_attr_t* __restrict attr,
                                 void * (*fn)(void*),

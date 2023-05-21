@@ -60,7 +60,8 @@ inline void TaskGroup::exchange(TaskGroup** pg, bthread_t next_tid) {
 }
 
 inline void TaskGroup::sched_to(TaskGroup** pg, bthread_t next_tid) {
-    // 通过传入的参数：next_tid找到TM：next_meta，和对应的ContextualStack信息：stk。
+    // 通过传入的参数 tid 找到TM
+    // 并且创建 stack
     TaskMeta* next_meta = address_meta(next_tid);
     if (next_meta->stack == NULL) {
         ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner);
