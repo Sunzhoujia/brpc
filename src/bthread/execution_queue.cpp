@@ -77,6 +77,7 @@ void ExecutionQueueBase::start_execute(TaskNode* node) {
         // point, we think it's just fine.
         _high_priority_tasks.fetch_add(1, butil::memory_order_relaxed);
     }
+    // 
     TaskNode* const prev_head = _head.exchange(node, butil::memory_order_release);
     if (prev_head != NULL) {
         node->next = prev_head;
@@ -89,14 +90,17 @@ void ExecutionQueueBase::start_execute(TaskNode* node) {
 
     ExecutionQueueVars* const vars = get_execq_vars();
     vars->execq_active_count << 1;
+    // 优先原地执行
     if (node->in_place) {
         int niterated = 0;
+        // 执行单个任务
         _execute(node, node->high_priority, &niterated);
         TaskNode* tmp = node;
         // return if no more
         if (node->high_priority) {
             _high_priority_tasks.fetch_sub(niterated, butil::memory_order_relaxed);
         }
+        // 判断队列是否还有更多任务并进行链表反转从而能够继续执行。
         if (!_more_tasks(tmp, &tmp, !node->iterated)) {
             vars->execq_active_count << -1;
             return_task_node(node);
@@ -137,6 +141,7 @@ void* ExecutionQueueBase::_execute_tasks(void* arg) {
             m->return_task_node(saved_head);
         }
         int rc = 0;
+        // 判断是否有待执行的高优任务
         if (m->_high_priority_tasks.load(butil::memory_order_relaxed) > 0) {
             int nexecuted = 0;
             // Don't care the return value

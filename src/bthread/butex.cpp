@@ -82,8 +82,14 @@ enum WaiterState {
 
 struct Butex;
 
+// ButexWaiter是LinkNode的子类，LinkNode里只定义了指向前后节点的指针
 struct ButexWaiter : public butil::LinkNode<ButexWaiter> {
     // tids of pthreads are 0
+    // tid就是64位的bthread id。
+    // Butex实现了bthread间的挂起&唤醒，也实现了bthread和pthread间的挂起&唤醒，
+    // 一个pthread在需要的时候可以挂起，等待适当的时候被一个bthread唤醒，线程挂起不需要tid，填0即可。
+    // pthread被bthread唤醒的例子可参考brpc的example目录下的一些client.cpp示例程序，执行main函数的pthread
+    // 会被挂起，某个bthread执行完自己的任务后会去唤醒pthread。
     bthread_t tid;
 
     // Erasing node from middle of LinkedList is thread-unsafe, we need
@@ -93,10 +99,18 @@ struct ButexWaiter : public butil::LinkNode<ButexWaiter> {
 
 // non_pthread_task allocates this structure on stack and queue it in
 // Butex::waiters.
+// bthread需要挂起时，会在栈上创建一个ButexBthreadWaiter对象（对象存储在bthread的私有栈空间内）并加入等待队列。
 struct ButexBthreadWaiter : public ButexWaiter {
     TaskMeta* task_meta;
     TimerThread::TaskId sleep_id;
+
+    // 状态标记，根据锁变量当前状态是否发生改变，waiter_state会被设为不同的值。
     WaiterState waiter_state;
+
+    // expected_value存储的是当bthread竞争互斥锁失败时锁变量的值，由于从bthread竞争互斥锁失败到bthread挂起
+    // 有一定的时间间隔，在这个时间间隔内锁变量的值可能会发生变化，也许锁已经被释放了，那么之前竞争锁失败的bthread
+    // 就不应挂起，否则可能永远不会被唤醒了，它应该放弃挂起动作，再去竞争互斥锁。所以一个bthread在执行挂起动作前
+    // 一定要再次去查看锁变量的当前最新值，只有锁变量当前最新值等于expected_value时才能真正执行挂起动作。
     int expected_value;
     Butex* initial_butex;
     TaskControl* control;
@@ -105,6 +119,7 @@ struct ButexBthreadWaiter : public ButexWaiter {
 
 // pthread_task or main_task allocates this structure on stack and queue it
 // in Butex::waiters.
+// 如果是pthread挂起，则创建ButexPthreadWaiter对象并加入等待队列
 struct ButexPthreadWaiter : public ButexWaiter {
     butil::atomic<int> sig;
 };
@@ -117,7 +132,9 @@ struct BAIDU_CACHELINE_ALIGNMENT Butex {
     Butex() {}
     ~Butex() {}
 
+    // 锁变量的值
     butil::atomic<int> value;
+    // // 等待队列，存储等待互斥锁的各个bthread的信息。
     ButexWaiterList waiters;
     internal::FastPthreadMutex waiter_lock;
 };
@@ -636,8 +653,12 @@ static int butex_wait_from_pthread(TaskGroup* g, Butex* b, int expected_value,
     return rc;
 }
 
+// arg是指向Butex::value锁变量的指针，expected_value是bthread竞争锁失败时锁变量的值
 int butex_wait(void* arg, int expected_value, const timespec* abstime) {
+    // 通过arg定位到Butex对象的地址。
     Butex* b = container_of(static_cast<butil::atomic<int>*>(arg), Butex, value);
+    // 如果锁变量当前最新值不等于expected_value，则锁的状态发生了变化，当前bthread不再执行挂起动作，
+    // 直接返回，在外层代码中继续去竞争锁。
     if (b->value.load(butil::memory_order_relaxed) != expected_value) {
         errno = EWOULDBLOCK;
         // Sometimes we may take actions immediately after unmatched butex,
@@ -648,8 +669,11 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime) {
     TaskGroup* g = tls_task_group;
     // 调用 pthread 的接口去wait
     if (NULL == g || g->is_current_pthread_task()) {
+       // 当前代码不在bthread中执行而是在直接在pthread上执行，调用butex_wait_from_pthread让pthread挂起。
         return butex_wait_from_pthread(g, b, expected_value, abstime);
     }
+
+    // 创建ButexBthreadWaiter类型的局部变量bbw，bbw是分配在bthread的私有栈空间上的。
     ButexBthreadWaiter bbw;
     // tid is 0 iff the thread is non-bthread
     bbw.tid = g->current_tid();
@@ -682,6 +706,7 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime) {
     bbw.task_meta->current_waiter.store(&bbw, butil::memory_order_release);
     // wait_for_butex() 负责给 butex 添加 waiter，把当前 bthread 放入 TG 的等待队列。
     g->set_remained(wait_for_butex, &bbw);
+    // 当前bthread yield让出cpu，pthread会从TaskGroup的任务队列中取出下一个bthread去执行。
     TaskGroup::sched(&g);
 
     // erase_from_butex_and_wakeup (called by TimerThread) is possibly still

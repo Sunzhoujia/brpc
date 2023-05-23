@@ -120,6 +120,9 @@ struct BAIDU_CACHELINE_ALIGNMENT TaskNode {
 template <size_t size, bool small_object> struct TaskAllocatorBase {
 };
 
+// 特化
+// 如果是小对象，直接用 TaskNode 里保留的56个字节
+// 如果是大对象，则动态分配。
 template <size_t size>
 struct TaskAllocatorBase<size, true> {
     inline static void* allocate(TaskNode* node)
@@ -271,6 +274,8 @@ public:
         return f(meta, static_cast<iterator&>(it));
     }
 
+    // 封装了这么多层主要是因为 base 这一层不是模板，而 clear_task_mem 和 execute_task 是和具体类型相关的
+    // 感觉这是一种设计模式，没学过。
     inline static int create(id_t* id, const ExecutionQueueOptions* options,
                              execute_func_t execute_func, void* meta) {
         return Base::create(&id->value, options, execute_task, 
@@ -293,6 +298,7 @@ public:
         if (stopped()) {
             return EINVAL;
         }
+        // 根据 task 创建 taskNode
         TaskNode* node = allocate_node();
         if (BAIDU_UNLIKELY(node == NULL)) {
             return ENOMEM;
@@ -308,12 +314,14 @@ public:
         if (options) {
             opt = *options;
         }
+        // opt 有两个：是否优先级和是否本地执行
         node->high_priority = opt.high_priority;
         node->in_place = opt.in_place_if_possible;
         if (handle) {
             handle->node = node;
             handle->version = node->version;
         }
+        // 创建好task node后调用start_execute，从这里开始也就进入了真正操作队列的部分
         start_execute(node);
         return 0;
     }
@@ -323,6 +331,8 @@ inline ExecutionQueueOptions::ExecutionQueueOptions()
     : bthread_attr(BTHREAD_ATTR_NORMAL), executor(NULL)
 {}
 
+// 调用的是 ExecutionQueueBase的 create，也就是Base (ExecutionQueueBase)里create函数的的封装，
+// base的create函数真正创建了一个queue，主要是从资源池里拿到实例，然后修改一些关键变量完成创建。
 template <typename T>
 inline int execution_queue_start(
         ExecutionQueueId<T>* id, 

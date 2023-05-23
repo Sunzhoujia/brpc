@@ -155,6 +155,7 @@ struct ExecutionQueueOptions {
 // the default options. 
 // Returns 0 on success, errno otherwise
 // NOTE: type |T| can be non-POD but must be copy-constructible
+// id 用于定位队列，options 保存任务执行用的 bthread 属性，execute 是执行函数，meta 传递给执行函数的第一个参数
 template <typename T>
 int execution_queue_start(
         ExecutionQueueId<T>* id, 
