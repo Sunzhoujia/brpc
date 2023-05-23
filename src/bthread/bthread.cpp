@@ -169,8 +169,13 @@ struct TidJoiner {
 
 }  // namespace bthread
 
+
+// extern "C" 告诉编译器这部分代码按照C的方式进行编译, 防止C++编译器将函数名改编(加入参数信息)，导致链接时C的代码找不到函数
+// 因为C++ compiler 是支持overload的，所以编译器会将函数名改编，加入参数信息，以此来区分不同的函数，但C不会
 extern "C" {
 
+// restrict 关键字：告诉编译器，在该指针的生命周期内，其指向的对象不会被别的指针所引用，这样编译器就可以进行优化了
+// 当开启 -O3 优化，可以减少访问内存次数。减少执行的指令数。
 int bthread_start_urgent(bthread_t* __restrict tid,
                          const bthread_attr_t* __restrict attr,
                          void * (*fn)(void*),

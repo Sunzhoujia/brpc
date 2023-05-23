@@ -541,6 +541,9 @@ static void wait_for_butex(void* arg) {
     // tt_lock represents TimerThread::_mutex. Visibility of waiter_state is
     // sequenced by two locks, both threads are guaranteed to see the correct
     // value.
+    // 不考虑 timeout: 
+    //               1) 将bw添加到 b->waiters
+    //               2）将当前 bthread 添加到 TG 的调度队列
     {
         BAIDU_SCOPED_LOCK(b->waiter_lock);
         if (b->value.load(butil::memory_order_relaxed) != bw->expected_value) {
@@ -643,6 +646,7 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime) {
         return -1;
     }
     TaskGroup* g = tls_task_group;
+    // 调用 pthread 的接口去wait
     if (NULL == g || g->is_current_pthread_task()) {
         return butex_wait_from_pthread(g, b, expected_value, abstime);
     }
@@ -676,6 +680,7 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime) {
     // release fence matches with acquire fence in interrupt_and_consume_waiters
     // in task_group.cpp to guarantee visibility of `interrupted'.
     bbw.task_meta->current_waiter.store(&bbw, butil::memory_order_release);
+    // wait_for_butex() 负责给 butex 添加 waiter，把当前 bthread 放入 TG 的等待队列。
     g->set_remained(wait_for_butex, &bbw);
     TaskGroup::sched(&g);
 

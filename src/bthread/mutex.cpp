@@ -635,9 +635,11 @@ const MutexInternal MUTEX_LOCKED_RAW = {{1},{0},0};
 BAIDU_CASSERT(sizeof(unsigned) == sizeof(MutexInternal),
               sizeof_mutex_internal_must_equal_unsigned);
 
+// 先自旋再挂起。当标记成contented，就wait
 inline int mutex_lock_contended(bthread_mutex_t* m) {
     butil::atomic<unsigned>* whole = (butil::atomic<unsigned>*)m->butex;
     while (whole->exchange(BTHREAD_MUTEX_CONTENDED) & BTHREAD_MUTEX_LOCKED) {
+        // 如果butex当前的状态是 locked&&contented，就挂起bthread
         if (bthread::butex_wait(whole, BTHREAD_MUTEX_CONTENDED, NULL) < 0 &&
             errno != EWOULDBLOCK && errno != EINTR/*note*/) {
             // a mutex lock should ignore interruptions in general since
@@ -707,6 +709,7 @@ extern "C" {
 int bthread_mutex_init(bthread_mutex_t* __restrict m,
                        const bthread_mutexattr_t* __restrict) {
     bthread::make_contention_site_invalid(&m->csite);
+    // m->butex 保存的是 Butex 的 value成员的地址，value 后面会重新解释成 MutexInternal 去使用
     m->butex = bthread::butex_create_checked<unsigned>();
     if (!m->butex) {
         return ENOMEM;
@@ -734,6 +737,7 @@ int bthread_mutex_lock_contended(bthread_mutex_t* m) {
 
 int bthread_mutex_lock(bthread_mutex_t* m) {
     bthread::MutexInternal* split = (bthread::MutexInternal*)m->butex;
+    // exchange 返回的是 locked 之前的值，如果之前是 0，说明没有被锁住，可以直接加锁返回
     if (!split->locked.exchange(1, butil::memory_order_acquire)) {
         return 0;
     }

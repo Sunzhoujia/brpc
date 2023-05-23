@@ -329,11 +329,11 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
             m->local_storage.keytable = NULL; // optional
         }
 
-        // 累加版本号，且版本号不能为0
         // Increase the version and wake up all joiners, if resulting version
         // is 0, change it to 1 to make bthread_t never be 0. Any access
         // or join to the bthread after changing version will be rejected.
         // The spinlock is for visibility of TaskGroup::get_attr.
+        // TM 是复用的，累加版本号可以区分bthread
         {
             BAIDU_SCOPED_LOCK(m->version_lock);
             if (0 == ++*m->version_butex) {
@@ -404,11 +404,12 @@ int TaskGroup::start_foreground(TaskGroup** pg,
 
     TaskGroup* g = *pg;
     g->_control->_nbthreads << 1;
-    // 在 pthread 里创建 bthread
+    // 在 pthread 里创建 bthread， 则直接把 new bthread 入队
     if (g->is_current_pthread_task()) {
         // never create foreground task in pthread.
         g->ready_to_run(m->tid, (using_attr.flags & BTHREAD_NOSIGNAL));
     } else {
+      // 在 bthread 里创建新的 bthread，直接 yield，因为是 foreground 接口。
         // NOSIGNAL affects current task, not the new task.
         RemainedFn fn = NULL;
         if (g->current_task()->about_to_quit) {
@@ -420,6 +421,7 @@ int TaskGroup::start_foreground(TaskGroup** pg,
             g->current_tid(),
             (bool)(using_attr.flags & BTHREAD_NOSIGNAL)
         };
+        // 在sched到 new bthread 之前，需要做一些额外工作：把当前 bthread 入队。
         g->set_remained(fn, &args);
         TaskGroup::sched_to(pg, m->tid);
     }
@@ -550,6 +552,7 @@ void TaskGroup::ending_sched(TaskGroup** pg) {
         if (next_meta->stack_type() == cur_meta->stack_type()) {
             // also works with pthread_task scheduling to pthread_task, the
             // transfered stack is just _main_stack.
+            // 如果next bthread 和 当前 bthread 的栈类型相同，就把当前 bthread 的栈给 next bthread
             next_meta->set_stack(cur_meta->release_stack());
         } else {
             ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner);
@@ -623,6 +626,8 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
                       << next_meta->tid;
         }
 
+        // 当前 bthread 的 stack 为空， 就说明之前把  stack 赋给 next bthread，则不需要切换了
+        // 否则需要切换
         if (cur_meta->stack != NULL) {
             // 执行jump_stack()去切换栈。
             if (next_meta->stack != cur_meta->stack) {
