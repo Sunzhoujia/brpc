@@ -132,6 +132,7 @@ int main(int argc, char* argv[]) {
     } else {
         bids.resize(FLAGS_thread_num);
         for (int i = 0; i < FLAGS_thread_num; ++i) {
+          // TC, TG 都是惰性初始化
             if (bthread_start_background(
                     &bids[i], NULL, sender, &channel) != 0) {
                 LOG(ERROR) << "Fail to create bthread";

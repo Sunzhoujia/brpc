@@ -411,6 +411,7 @@ void Channel::CallMethod(const google::protobuf::MethodDescriptor* method,
                          google::protobuf::Closure* done) {
     const int64_t start_send_real_us = butil::gettimeofday_us();
     Controller* cntl = static_cast<Controller*>(controller_base);
+    // 为Controller对象的相关成员变量赋值，包括RPC起始时间戳、最大重试次数、RPC超时时间、Backup Request超时时间、标识一次RPC过程的唯一id correlation_id等
     cntl->OnRPCBegin(start_send_real_us);
     // Override max_retry first to reset the range of correlation_id
     if (cntl->max_retry() == UNSET_MAGIC_NUM) {
